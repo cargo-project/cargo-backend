@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+docker/mosquitto/iot/certs/*
+!docker/mosquitto/iot/certs/.gitkeep
+*.log
+
+# resultados del banco de pruebas (se generan en cada corrida)
+benchmark-results/
