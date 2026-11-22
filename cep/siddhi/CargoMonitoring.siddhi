@@ -1,0 +1,446 @@
+@App:name('CargoMonitoring')
+@App:description('CarGO CEP: ROUTE_DEVIATION, PROLONGED_STOP, CONNECTION_LOSS, DESTINATION_ARRIVAL, EMERGENCY.')
+
+/*
+ * Entradas: telemetry/enriched (ya validada, sin duplicados, clasificada LIVE/DELAYED y
+ *           enriquecida con PostGIS) y trip/started, trip/config-updated, trip/ended (control).
+ * Salida  : events/detected.
+ *
+ * Los umbrales son POR VIAJE. Los `within` / `for` de Siddhi piden constantes, asi que cada regla
+ * es una maquina de estados por viaje guardada en tablas en memoria con clave trip_id:
+ *   1. dos consultas llevan el estado: suman la lectura al episodio abierto o abren uno,
+ *   2. otra consulta lo reinicia cuando la condicion deja de cumplirse,
+ *   3. otra cruza la lectura con el estado y emite cuando se cumple lo temporal/espacial;
+ *      el evento emitido marca el estado como alertado (una alerta por episodio).
+ * Las consultas suscritas al mismo stream corren en orden de definicion, asi los pasos 1-3
+ * ven un estado consistente en cada lectura.
+ *
+ * Las reglas en vivo solo usan telemetria LIVE: una rafaga de historial del store-and-forward
+ * nunca dispara alertas "actuales". Ese historial se analiza aparte (ver "lo que paso sin senal")
+ * y lo que se detecta sale marcado delayed = true. EMERGENCY alerta siempre, llegue cuando llegue.
+ * CEP no deduplica (eso lo hace la ingesta), no llama a la API y no calcula geometria.
+ */
+
+-- ========================================================================== entradas
+@source(type = 'mqtt', url = '${MQTT_URL}', username = '${MQTT_USERNAME}', password = '${MQTT_PASSWORD}',
+        topic = 'telemetry/enriched', quality.of.service = '1', client.id = 'cargo-cep-telemetry',
+        clean.session = 'false',
+        @map(type = 'json', fail.on.missing.attribute = 'false',
+             @attributes(trip_id = '$.trip_id', sequence = '$.sequence', event_time_ms = '$.event_time_ms',
+                         latitude = '$.latitude', longitude = '$.longitude', speed_kmh = '$.speed_kmh',
+                         kind = '$.kind', temporal_classification = '$.temporal_classification',
+                         moving_away_m = '$.moving_away_m',
+                         distance_to_destination_m = '$.distance_to_destination_m',
+                         inside_destination = '$.inside_destination',
+                         displacement_window_m = '$.displacement_window_m')))
+define stream EnrichedTelemetryStream (trip_id string, sequence long, event_time_ms long, latitude double,
+                                       longitude double, speed_kmh double, kind string,
+                                       temporal_classification string, moving_away_m double,
+                                       distance_to_destination_m double, inside_destination bool,
+                                       displacement_window_m double);
+
+@source(type = 'mqtt', url = '${MQTT_URL}', username = '${MQTT_USERNAME}', password = '${MQTT_PASSWORD}',
+        topic = 'trip/started', quality.of.service = '1', client.id = 'cargo-cep-trip-started',
+        clean.session = 'false',
+        @map(type = 'json', fail.on.missing.attribute = 'false',
+             @attributes(trip_id = '$.trip_id', trip_code = '$.trip_code',
+                         deviation_min_events = '$.deviation_min_events',
+                         deviation_min_increase_m = '$.deviation_min_increase_m',
+                         deviation_window_ms = '$.deviation_window_ms', stop_speed_kmh = '$.stop_speed_kmh',
+                         stop_max_displacement_m = '$.stop_max_displacement_m',
+                         stop_duration_ms = '$.stop_duration_ms', connection_loss_ms = '$.connection_loss_ms',
+                         arrival_confirmation_ms = '$.arrival_confirmation_ms')))
+define stream TripStartedStream (trip_id string, trip_code string, deviation_min_events int,
+                                 deviation_min_increase_m double, deviation_window_ms long, stop_speed_kmh double,
+                                 stop_max_displacement_m double, stop_duration_ms long, connection_loss_ms long,
+                                 arrival_confirmation_ms long);
+
+@source(type = 'mqtt', url = '${MQTT_URL}', username = '${MQTT_USERNAME}', password = '${MQTT_PASSWORD}',
+        topic = 'trip/config-updated', quality.of.service = '1', client.id = 'cargo-cep-trip-config',
+        clean.session = 'false',
+        @map(type = 'json', fail.on.missing.attribute = 'false',
+             @attributes(trip_id = '$.trip_id', trip_code = '$.trip_code',
+                         deviation_min_events = '$.deviation_min_events',
+                         deviation_min_increase_m = '$.deviation_min_increase_m',
+                         deviation_window_ms = '$.deviation_window_ms', stop_speed_kmh = '$.stop_speed_kmh',
+                         stop_max_displacement_m = '$.stop_max_displacement_m',
+                         stop_duration_ms = '$.stop_duration_ms', connection_loss_ms = '$.connection_loss_ms',
+                         arrival_confirmation_ms = '$.arrival_confirmation_ms')))
+define stream TripConfigUpdatedStream (trip_id string, trip_code string,
+                                       deviation_min_events int, deviation_min_increase_m double,
+                                       deviation_window_ms long, stop_speed_kmh double,
+                                       stop_max_displacement_m double, stop_duration_ms long,
+                                       connection_loss_ms long, arrival_confirmation_ms long);
+
+@source(type = 'mqtt', url = '${MQTT_URL}', username = '${MQTT_USERNAME}', password = '${MQTT_PASSWORD}',
+        topic = 'trip/ended', quality.of.service = '1', client.id = 'cargo-cep-trip-ended',
+        clean.session = 'false',
+        @map(type = 'json', fail.on.missing.attribute = 'false', @attributes(trip_id = '$.trip_id')))
+define stream TripEndedStream (trip_id string);
+
+define trigger ConnectionCheckTrigger at every 5 sec;
+
+-- ========================================================================== salida
+@sink(type = 'mqtt', url = '${MQTT_URL}', username = '${MQTT_USERNAME}', password = '${MQTT_PASSWORD}',
+      topic = 'events/detected', quality.of.service = '1', client.id = 'cargo-cep-events',
+      @map(type = 'json'))
+@sink(type = 'log', prefix = 'CARGO-CEP detected')
+define stream DetectedEventStream (event_id string, event_type string, trip_id string, started_at_ms long,
+                                   event_time_ms long, detected_at_ms long, latitude double, longitude double,
+                                   evidence_from_sequence long, evidence_to_sequence long, metric_value double,
+                                   delayed bool);
+
+-- ========================================================================== estado
+@PrimaryKey('trip_id')
+define table ActiveTripTable (trip_id string, trip_code string, deviation_min_events int,
+                              deviation_min_increase_m double, deviation_window_ms long, stop_speed_kmh double,
+                              stop_max_displacement_m double, stop_duration_ms long, connection_loss_ms long,
+                              arrival_confirmation_ms long, last_live_ms long, last_sequence long,
+                              last_latitude double, last_longitude double, connection_alerted bool);
+
+@PrimaryKey('trip_id')
+define table DeviationStateTable (trip_id string, first_ms long, first_sequence long, readings int, alerted bool);
+
+@PrimaryKey('trip_id')
+define table StopStateTable (trip_id string, first_ms long, first_sequence long, readings int, alerted bool);
+
+@PrimaryKey('trip_id')
+define table ArrivalStateTable (trip_id string, first_ms long, first_sequence long, readings int, alerted bool);
+
+-- Estado aparte para lo que llega atrasado (lo que pasó mientras no había señal): nunca se
+-- mezcla con el seguimiento en vivo.
+@PrimaryKey('trip_id')
+define table DelayedDeviationStateTable (trip_id string, first_ms long, first_sequence long, readings int,
+                                         alerted bool);
+
+@PrimaryKey('trip_id')
+define table DelayedStopStateTable (trip_id string, first_ms long, first_sequence long, readings int, alerted bool);
+
+-- ========================================================================== control de viajes
+-- La API vuelve a publicar trip/started cada cierto tiempo (para resincronizar si CEP se reinicia).
+-- A los viajes conocidos solo se les actualiza la config, asi no se pierden el timer de ausencia
+-- ni el flag de alertado; los nuevos se insertan. (Va en dos pasos porque `update or insert ... set`
+-- reemplaza la fila completa.)
+@info(name = 'refresh-known-trip-configuration')
+from TripStartedStream
+select trip_id, deviation_min_events, deviation_min_increase_m, deviation_window_ms, stop_speed_kmh,
+       stop_max_displacement_m, stop_duration_ms, connection_loss_ms, arrival_confirmation_ms
+update ActiveTripTable
+    set ActiveTripTable.deviation_min_events = deviation_min_events,
+        ActiveTripTable.deviation_min_increase_m = deviation_min_increase_m,
+        ActiveTripTable.deviation_window_ms = deviation_window_ms, ActiveTripTable.stop_speed_kmh = stop_speed_kmh,
+        ActiveTripTable.stop_max_displacement_m = stop_max_displacement_m,
+        ActiveTripTable.stop_duration_ms = stop_duration_ms, ActiveTripTable.connection_loss_ms = connection_loss_ms,
+        ActiveTripTable.arrival_confirmation_ms = arrival_confirmation_ms
+    on ActiveTripTable.trip_id == trip_id;
+
+@info(name = 'register-new-trip')
+from TripStartedStream[not ((ActiveTripTable.trip_id == trip_id) in ActiveTripTable)]
+select trip_id, trip_code, deviation_min_events, deviation_min_increase_m, deviation_window_ms,
+       stop_speed_kmh, stop_max_displacement_m, stop_duration_ms, connection_loss_ms, arrival_confirmation_ms,
+       currentTimeMillis() as last_live_ms, -1L as last_sequence, 0.0 as last_latitude, 0.0 as last_longitude,
+       false as connection_alerted
+insert into ActiveTripTable;
+
+@info(name = 'update-trip-configuration')
+from TripConfigUpdatedStream
+select trip_id, deviation_min_events, deviation_min_increase_m, deviation_window_ms, stop_speed_kmh,
+       stop_max_displacement_m, stop_duration_ms, connection_loss_ms, arrival_confirmation_ms
+update ActiveTripTable
+    set ActiveTripTable.deviation_min_events = deviation_min_events,
+        ActiveTripTable.deviation_min_increase_m = deviation_min_increase_m,
+        ActiveTripTable.deviation_window_ms = deviation_window_ms, ActiveTripTable.stop_speed_kmh = stop_speed_kmh,
+        ActiveTripTable.stop_max_displacement_m = stop_max_displacement_m,
+        ActiveTripTable.stop_duration_ms = stop_duration_ms, ActiveTripTable.connection_loss_ms = connection_loss_ms,
+        ActiveTripTable.arrival_confirmation_ms = arrival_confirmation_ms
+    on ActiveTripTable.trip_id == trip_id;
+
+@info(name = 'forget-ended-trip')
+from TripEndedStream
+delete ActiveTripTable on ActiveTripTable.trip_id == trip_id;
+
+from TripEndedStream
+delete DeviationStateTable on DeviationStateTable.trip_id == trip_id;
+
+from TripEndedStream
+delete StopStateTable on StopStateTable.trip_id == trip_id;
+
+from TripEndedStream
+delete ArrivalStateTable on ArrivalStateTable.trip_id == trip_id;
+
+from TripEndedStream
+delete DelayedDeviationStateTable on DelayedDeviationStateTable.trip_id == trip_id;
+
+from TripEndedStream
+delete DelayedStopStateTable on DelayedStopStateTable.trip_id == trip_id;
+
+-- ========================================================================== telemetria en vivo
+@info(name = 'select-live-telemetry')
+from EnrichedTelemetryStream[temporal_classification == 'LIVE'] as t join ActiveTripTable as a
+    on t.trip_id == a.trip_id
+select t.trip_id, t.sequence, t.event_time_ms, t.latitude, t.longitude, t.speed_kmh, t.moving_away_m,
+       t.distance_to_destination_m, t.inside_destination, t.displacement_window_m,
+       a.deviation_min_events, a.deviation_min_increase_m, a.deviation_window_ms, a.stop_speed_kmh,
+       a.stop_max_displacement_m, a.stop_duration_ms, a.arrival_confirmation_ms
+insert into LiveTelemetryStream;
+
+@info(name = 'refresh-communication-heartbeat')
+from LiveTelemetryStream
+select trip_id, currentTimeMillis() as now_ms, sequence, latitude, longitude
+update ActiveTripTable
+    set ActiveTripTable.last_live_ms = now_ms, ActiveTripTable.last_sequence = sequence,
+        ActiveTripTable.last_latitude = latitude, ActiveTripTable.last_longitude = longitude,
+        ActiveTripTable.connection_alerted = false
+    on ActiveTripTable.trip_id == trip_id;
+
+-- ========================================================================== ROUTE_DEVIATION
+-- CarGO no planifica rutas (un viaje es origen + destino). Posible desviacion = el vehiculo SE ALEJA
+-- del destino: moving_away_m (PostGIS) = distancia actual al destino menos la mas cercana que ya
+-- alcanzo en el viaje. El episodio se abre cuando pasa deviation_min_increase_m y alerta si se
+-- mantiene deviation_min_events lecturas LIVE seguidas durante deviation_window_ms. Se reinicia
+-- apenas el vehiculo se vuelve a acercar.
+@info(name = 'deviation-count-consecutive')
+from LiveTelemetryStream[moving_away_m > deviation_min_increase_m] as t
+    join DeviationStateTable as s on t.trip_id == s.trip_id
+select t.trip_id, s.readings + 1 as readings
+update DeviationStateTable set DeviationStateTable.readings = readings on DeviationStateTable.trip_id == trip_id;
+
+@info(name = 'deviation-open-episode')
+from LiveTelemetryStream[moving_away_m > deviation_min_increase_m
+                         and not ((DeviationStateTable.trip_id == trip_id) in DeviationStateTable)]
+select trip_id, event_time_ms as first_ms, sequence as first_sequence, 1 as readings, false as alerted
+insert into DeviationStateTable;
+
+@info(name = 'deviation-reset-approaching-again')
+from LiveTelemetryStream[moving_away_m <= deviation_min_increase_m]
+delete DeviationStateTable on DeviationStateTable.trip_id == trip_id;
+
+@info(name = 'deviation-detect')
+from LiveTelemetryStream[moving_away_m > deviation_min_increase_m] as t join DeviationStateTable as s
+    on t.trip_id == s.trip_id and s.alerted == false and s.readings >= t.deviation_min_events
+       and (t.event_time_ms - s.first_ms) >= t.deviation_window_ms
+select UUID() as event_id, 'ROUTE_DEVIATION' as event_type, t.trip_id, s.first_ms as started_at_ms,
+       t.event_time_ms, currentTimeMillis() as detected_at_ms, t.latitude, t.longitude,
+       s.first_sequence as evidence_from_sequence, t.sequence as evidence_to_sequence,
+       t.moving_away_m as metric_value, false as delayed
+insert into DetectedEventStream;
+
+-- ========================================================================== PROLONGED_STOP
+-- Quedarse quieto dentro de la zona de llegada es el final normal del viaje (descarga);
+-- eso lo maneja DESTINATION_ARRIVAL, nunca cuenta como detencion prolongada.
+@info(name = 'stop-count-consecutive')
+from LiveTelemetryStream[speed_kmh <= stop_speed_kmh and inside_destination == false] as t
+    join StopStateTable as s on t.trip_id == s.trip_id
+select t.trip_id, s.readings + 1 as readings
+update StopStateTable set StopStateTable.readings = readings on StopStateTable.trip_id == trip_id;
+
+@info(name = 'stop-open-episode')
+from LiveTelemetryStream[speed_kmh <= stop_speed_kmh and inside_destination == false
+                         and not ((StopStateTable.trip_id == trip_id) in StopStateTable)]
+select trip_id, event_time_ms as first_ms, sequence as first_sequence, 1 as readings, false as alerted
+insert into StopStateTable;
+
+@info(name = 'stop-reset-moving-or-at-destination')
+from LiveTelemetryStream[speed_kmh > stop_speed_kmh or inside_destination == true]
+delete StopStateTable on StopStateTable.trip_id == trip_id;
+
+-- displacement_window_m (PostGIS) es lo que se movio en el ultimo stop_duration; -1 = no se sabe.
+@info(name = 'stop-detect')
+from LiveTelemetryStream[speed_kmh <= stop_speed_kmh and inside_destination == false
+                         and displacement_window_m >= 0.0
+                         and displacement_window_m <= stop_max_displacement_m] as t
+    join StopStateTable as s
+    on t.trip_id == s.trip_id and s.alerted == false and s.readings >= 2
+       and (t.event_time_ms - s.first_ms) >= t.stop_duration_ms
+select UUID() as event_id, 'PROLONGED_STOP' as event_type, t.trip_id, s.first_ms as started_at_ms,
+       t.event_time_ms, currentTimeMillis() as detected_at_ms, t.latitude, t.longitude,
+       s.first_sequence as evidence_from_sequence, t.sequence as evidence_to_sequence,
+       convert(t.event_time_ms - s.first_ms, 'double') / 1000.0 as metric_value, false as delayed
+insert into DetectedEventStream;
+
+-- ========================================================================== DESTINATION_ARRIVAL
+@info(name = 'arrival-count-consecutive')
+from LiveTelemetryStream[inside_destination == true] as t join ArrivalStateTable as s on t.trip_id == s.trip_id
+select t.trip_id, s.readings + 1 as readings
+update ArrivalStateTable set ArrivalStateTable.readings = readings on ArrivalStateTable.trip_id == trip_id;
+
+@info(name = 'arrival-open-episode')
+from LiveTelemetryStream[inside_destination == true and not ((ArrivalStateTable.trip_id == trip_id) in ArrivalStateTable)]
+select trip_id, event_time_ms as first_ms, sequence as first_sequence, 1 as readings, false as alerted
+insert into ArrivalStateTable;
+
+-- Salir de la zona reinicia la confirmacion (salvo que la llegada ya se haya alertado).
+-- Ojo: el filtro "alerted == false" puesto en el ON del delete no se aplicaba y el episodio
+-- sobrevivia a la salida (entrar, salir y volver a entrar daba una llegada falsa). Por eso el
+-- filtro va en un join, igual que en arrival-detect, y el delete es solo por trip_id.
+@info(name = 'arrival-reset-outside-destination')
+from LiveTelemetryStream[inside_destination == false] as t join ArrivalStateTable as s
+    on t.trip_id == s.trip_id and s.alerted == false
+select t.trip_id
+insert into ArrivalResetStream;
+
+@info(name = 'arrival-reset-apply')
+from ArrivalResetStream
+delete ArrivalStateTable on ArrivalStateTable.trip_id == trip_id;
+
+@info(name = 'arrival-detect')
+from LiveTelemetryStream[inside_destination == true] as t join ArrivalStateTable as s
+    on t.trip_id == s.trip_id and s.alerted == false and s.readings >= 2
+       and (t.event_time_ms - s.first_ms) >= t.arrival_confirmation_ms
+select UUID() as event_id, 'DESTINATION_ARRIVAL' as event_type, t.trip_id, s.first_ms as started_at_ms,
+       t.event_time_ms, currentTimeMillis() as detected_at_ms, t.latitude, t.longitude,
+       s.first_sequence as evidence_from_sequence, t.sequence as evidence_to_sequence,
+       t.distance_to_destination_m as metric_value, false as delayed
+insert into DetectedEventStream;
+
+-- ========================================================================== CONNECTION_LOSS (ausencia)
+@info(name = 'connection-loss-detect')
+from ConnectionCheckTrigger as tick join ActiveTripTable as a
+    on a.connection_alerted == false and (tick.triggered_time - a.last_live_ms) > a.connection_loss_ms
+select UUID() as event_id, 'CONNECTION_LOSS' as event_type, a.trip_id, a.last_live_ms as started_at_ms,
+       a.last_live_ms + a.connection_loss_ms as event_time_ms, currentTimeMillis() as detected_at_ms,
+       a.last_latitude as latitude, a.last_longitude as longitude, a.last_sequence as evidence_from_sequence,
+       a.last_sequence as evidence_to_sequence,
+       convert(tick.triggered_time - a.last_live_ms, 'double') / 1000.0 as metric_value, false as delayed
+insert into DetectedEventStream;
+
+-- ========================================================================== EMERGENCY
+@info(name = 'emergency-detect')
+from EnrichedTelemetryStream[kind == 'EMERGENCY']
+select UUID() as event_id, 'EMERGENCY' as event_type, trip_id, -1L as started_at_ms, event_time_ms,
+       currentTimeMillis() as detected_at_ms, latitude, longitude, sequence as evidence_from_sequence,
+       sequence as evidence_to_sequence, speed_kmh as metric_value,
+       temporal_classification == 'DELAYED' as delayed
+insert into DetectedEventStream;
+
+-- ========================================================================== lo que pasó sin señal
+-- Al reconectar, el store-and-forward manda de golpe lo que el dispositivo guardó (DELAYED). Esas
+-- lecturas no tocan el seguimiento en vivo: pasan por las mismas reglas de desviación y detención
+-- pero con su propio estado (Delayed*StateTable), y lo que se detecta sale con delayed = true
+-- ("alerta durante desconexión"). Las reglas comparan event_time del dispositivo, así que el tramo
+-- se analiza con los tiempos reales en que ocurrió.
+-- Si la misma situación ya se había alertado en vivo antes del corte, no se repite.
+-- La llegada no se repite acá: al reconectar, las lecturas en vivo dentro de la zona la confirman.
+@info(name = 'select-delayed-telemetry')
+from EnrichedTelemetryStream[temporal_classification == 'DELAYED'] as t join ActiveTripTable as a
+    on t.trip_id == a.trip_id
+select t.trip_id, t.sequence, t.event_time_ms, t.latitude, t.longitude, t.speed_kmh, t.moving_away_m,
+       t.distance_to_destination_m, t.inside_destination, t.displacement_window_m,
+       a.deviation_min_events, a.deviation_min_increase_m, a.deviation_window_ms, a.stop_speed_kmh,
+       a.stop_max_displacement_m, a.stop_duration_ms
+insert into DelayedTelemetryStream;
+
+-- desviación atrasada
+@info(name = 'delayed-deviation-count-consecutive')
+from DelayedTelemetryStream[moving_away_m > deviation_min_increase_m] as t
+    join DelayedDeviationStateTable as s on t.trip_id == s.trip_id
+select t.trip_id, s.readings + 1 as readings
+update DelayedDeviationStateTable set DelayedDeviationStateTable.readings = readings
+    on DelayedDeviationStateTable.trip_id == trip_id;
+
+@info(name = 'delayed-deviation-open-episode')
+from DelayedTelemetryStream[moving_away_m > deviation_min_increase_m
+                            and not ((DelayedDeviationStateTable.trip_id == trip_id) in DelayedDeviationStateTable)]
+select trip_id, event_time_ms as first_ms, sequence as first_sequence, 1 as readings, false as alerted
+insert into DelayedDeviationStateTable;
+
+@info(name = 'delayed-deviation-reset-approaching-again')
+from DelayedTelemetryStream[moving_away_m <= deviation_min_increase_m]
+delete DelayedDeviationStateTable on DelayedDeviationStateTable.trip_id == trip_id;
+
+@info(name = 'delayed-deviation-detect')
+from DelayedTelemetryStream[moving_away_m > deviation_min_increase_m] as t join DelayedDeviationStateTable as s
+    on t.trip_id == s.trip_id and s.alerted == false and s.readings >= t.deviation_min_events
+       and (t.event_time_ms - s.first_ms) >= t.deviation_window_ms
+select UUID() as event_id, 'ROUTE_DEVIATION' as event_type, t.trip_id, s.first_ms as started_at_ms,
+       t.event_time_ms, currentTimeMillis() as detected_at_ms, t.latitude, t.longitude,
+       s.first_sequence as evidence_from_sequence, t.sequence as evidence_to_sequence,
+       t.moving_away_m as metric_value, true as delayed
+insert into DelayedDeviationCandidateStream;
+
+-- detención atrasada
+@info(name = 'delayed-stop-count-consecutive')
+from DelayedTelemetryStream[speed_kmh <= stop_speed_kmh and inside_destination == false] as t
+    join DelayedStopStateTable as s on t.trip_id == s.trip_id
+select t.trip_id, s.readings + 1 as readings
+update DelayedStopStateTable set DelayedStopStateTable.readings = readings
+    on DelayedStopStateTable.trip_id == trip_id;
+
+@info(name = 'delayed-stop-open-episode')
+from DelayedTelemetryStream[speed_kmh <= stop_speed_kmh and inside_destination == false
+                            and not ((DelayedStopStateTable.trip_id == trip_id) in DelayedStopStateTable)]
+select trip_id, event_time_ms as first_ms, sequence as first_sequence, 1 as readings, false as alerted
+insert into DelayedStopStateTable;
+
+@info(name = 'delayed-stop-reset-moving-or-at-destination')
+from DelayedTelemetryStream[speed_kmh > stop_speed_kmh or inside_destination == true]
+delete DelayedStopStateTable on DelayedStopStateTable.trip_id == trip_id;
+
+@info(name = 'delayed-stop-detect')
+from DelayedTelemetryStream[speed_kmh <= stop_speed_kmh and inside_destination == false
+                            and displacement_window_m >= 0.0
+                            and displacement_window_m <= stop_max_displacement_m] as t
+    join DelayedStopStateTable as s
+    on t.trip_id == s.trip_id and s.alerted == false and s.readings >= 2
+       and (t.event_time_ms - s.first_ms) >= t.stop_duration_ms
+select UUID() as event_id, 'PROLONGED_STOP' as event_type, t.trip_id, s.first_ms as started_at_ms,
+       t.event_time_ms, currentTimeMillis() as detected_at_ms, t.latitude, t.longitude,
+       s.first_sequence as evidence_from_sequence, t.sequence as evidence_to_sequence,
+       convert(t.event_time_ms - s.first_ms, 'double') / 1000.0 as metric_value, true as delayed
+insert into DelayedStopCandidateStream;
+
+-- Una alerta por episodio también acá: el candidato marca su estado atrasado como alertado.
+from DelayedDeviationCandidateStream
+select trip_id
+update DelayedDeviationStateTable set DelayedDeviationStateTable.alerted = true
+    on DelayedDeviationStateTable.trip_id == trip_id;
+
+from DelayedStopCandidateStream
+select trip_id
+update DelayedStopStateTable set DelayedStopStateTable.alerted = true on DelayedStopStateTable.trip_id == trip_id;
+
+-- No repetir lo que ya se alertó en vivo antes del corte: si el episodio en vivo sigue abierto y
+-- alertado, el candidato se descarta (left outer join -> live_trip_id null = no había alerta en vivo).
+@info(name = 'delayed-deviation-skip-if-alerted-live')
+from DelayedDeviationCandidateStream as c left outer join DeviationStateTable as s
+    on c.trip_id == s.trip_id and s.alerted == true
+select c.event_id, c.event_type, c.trip_id, c.started_at_ms, c.event_time_ms, c.detected_at_ms, c.latitude,
+       c.longitude, c.evidence_from_sequence, c.evidence_to_sequence, c.metric_value, c.delayed,
+       s.trip_id as live_trip_id
+insert into DelayedDeviationCheckedStream;
+
+from DelayedDeviationCheckedStream[live_trip_id is null]
+select event_id, event_type, trip_id, started_at_ms, event_time_ms, detected_at_ms, latitude, longitude,
+       evidence_from_sequence, evidence_to_sequence, metric_value, delayed
+insert into DetectedEventStream;
+
+@info(name = 'delayed-stop-skip-if-alerted-live')
+from DelayedStopCandidateStream as c left outer join StopStateTable as s
+    on c.trip_id == s.trip_id and s.alerted == true
+select c.event_id, c.event_type, c.trip_id, c.started_at_ms, c.event_time_ms, c.detected_at_ms, c.latitude,
+       c.longitude, c.evidence_from_sequence, c.evidence_to_sequence, c.metric_value, c.delayed,
+       s.trip_id as live_trip_id
+insert into DelayedStopCheckedStream;
+
+from DelayedStopCheckedStream[live_trip_id is null]
+select event_id, event_type, trip_id, started_at_ms, event_time_ms, detected_at_ms, latitude, longitude,
+       evidence_from_sequence, evidence_to_sequence, metric_value, delayed
+insert into DetectedEventStream;
+
+-- ========================================================================== una alerta por episodio
+-- Solo las detecciones en vivo marcan el estado en vivo (las atrasadas tienen el suyo).
+from DetectedEventStream[event_type == 'ROUTE_DEVIATION' and delayed == false]
+select trip_id
+update DeviationStateTable set DeviationStateTable.alerted = true on DeviationStateTable.trip_id == trip_id;
+
+from DetectedEventStream[event_type == 'PROLONGED_STOP' and delayed == false]
+select trip_id
+update StopStateTable set StopStateTable.alerted = true on StopStateTable.trip_id == trip_id;
+
+from DetectedEventStream[event_type == 'DESTINATION_ARRIVAL']
+select trip_id
+update ArrivalStateTable set ArrivalStateTable.alerted = true on ArrivalStateTable.trip_id == trip_id;
+
+from DetectedEventStream[event_type == 'CONNECTION_LOSS']
+select trip_id
+update ActiveTripTable set ActiveTripTable.connection_alerted = true on ActiveTripTable.trip_id == trip_id;
