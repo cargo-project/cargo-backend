@@ -1,0 +1,10 @@
+
+# Agregado al deployment.yaml del runner solo cuando CEP_STATISTICS=true (banco de pruebas):
+# el reporter de consola de Carbon Metrics imprime las estadísticas de Siddhi cada 5 s.
+wso2.metrics:
+  enabled: true
+  reporting:
+    console:
+      - name: Console
+        enabled: true
+        pollingPeriod: 5
