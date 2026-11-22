@@ -1,0 +1,166 @@
+# Plataforma CarGO v2. Topología parecida a producción:
+#   * red "edge" : frontera del broker IoT (solo se publica el puerto TLS).
+#   * red "bus"  : bus de eventos privado (broker interno, CEP y procesos del pipeline). internal = sin salida.
+#   * red "data" : PostgreSQL/PostGIS. internal = nunca accesible desde afuera.
+#   * red "web"  : Nginx, API y el frontend (opcional).
+# docker-compose.override.yml (desarrollo) publica puertos extra, siempre en 127.0.0.1.
+
+name: cargo-v2
+
+x-backend: &backend
+  build: .
+  image: cargo-v2-backend:latest
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    MQTT_IOT_HOST: mqtt-iot
+    MQTT_IOT_PORT: "1883"
+    MQTT_IOT_USERNAME: cargo-ingestion
+    MQTT_IOT_PASSWORD: ${MQTT_IOT_INGESTION_PASSWORD}
+    MQTT_INTERNAL_HOST: mqtt-internal
+    MQTT_INTERNAL_PORT: "1883"
+    MQTT_INTERNAL_USERNAME: cargo-internal
+    MQTT_INTERNAL_PASSWORD: ${MQTT_INTERNAL_PASSWORD}
+    SIDDHI_HOST: cep
+    SIDDHI_PORT: "9090"
+
+services:
+  postgres:
+    image: postgis/postgis:17-3.5
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    networks: [data]
+    healthcheck:
+      # Chequeo por TCP: en la primera inicialización el entrypoint levanta un server temporal
+      # solo en el socket Unix; mirando 127.0.0.1 esperamos al server definitivo.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  migrate:
+    <<: *backend
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    networks: [data]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  mqtt-iot:
+    build: docker/mosquitto/iot
+    image: cargo-v2-mqtt-iot:latest
+    restart: unless-stopped
+    environment:
+      MQTT_IOT_INGESTION_PASSWORD: ${MQTT_IOT_INGESTION_PASSWORD}
+      MQTT_IOT_DEVICE_ACCOUNTS: ${MQTT_IOT_DEVICE_ACCOUNTS}
+      MQTT_IOT_TLS_HOSTNAME: ${MQTT_IOT_TLS_HOSTNAME:-mqtt-iot}
+    volumes:
+      - mqtt-iot-data:/mosquitto/data
+      - mqtt-iot-certs:/mosquitto/certs
+    ports: ["${MQTT_IOT_TLS_PUBLISH:-8883}:8883"]
+    networks: [edge]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -u cargo-ingestion -P \"$$MQTT_IOT_INGESTION_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 3"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mqtt-internal:
+    build: docker/mosquitto/internal
+    image: cargo-v2-mqtt-internal:latest
+    restart: unless-stopped
+    environment:
+      MQTT_INTERNAL_PASSWORD: ${MQTT_INTERNAL_PASSWORD}
+    volumes: [mqtt-internal-data:/mosquitto/data]
+    networks: [bus]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -u cargo-internal -P \"$$MQTT_INTERNAL_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 3"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    <<: *backend
+    networks: [web, data, bus, edge]   # "edge" solo para el health check del broker IoT (salida)
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mqtt-internal: { condition: service_healthy }
+
+  ingestion:
+    <<: *backend
+    command: ["python", "-m", "app.entrypoints.ingestion_service"]
+    healthcheck: { disable: true }
+    networks: [edge, data, bus]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mqtt-iot: { condition: service_healthy }
+      mqtt-internal: { condition: service_healthy }
+
+  geospatial:
+    <<: *backend
+    command: ["python", "-m", "app.entrypoints.geospatial_service"]
+    healthcheck: { disable: true }
+    networks: [data, bus]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mqtt-internal: { condition: service_healthy }
+
+  notifications:
+    <<: *backend
+    command: ["python", "-m", "app.entrypoints.notification_service"]
+    healthcheck: { disable: true }
+    networks: [web, data, bus]   # "web" da salida a api.telegram.org
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mqtt-internal: { condition: service_healthy }
+
+  cep:
+    build: cep
+    image: cargo-v2-cep:latest
+    restart: unless-stopped
+    environment:
+      MQTT_URL: tcp://mqtt-internal:1883
+      MQTT_USERNAME: cargo-internal
+      MQTT_PASSWORD: ${MQTT_INTERNAL_PASSWORD}
+    networks: [bus]
+    depends_on:
+      mqtt-internal: { condition: service_healthy }
+
+  nginx:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    volumes: ["./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"]
+    ports: ["${HTTP_PUBLISH:-80}:80"]
+    networks: [web]
+    depends_on:
+      api: { condition: service_healthy }
+
+  # Opcional: construye y sirve el frontend Next.js detrás del mismo origen.
+  frontend:
+    profiles: ["frontend"]
+    build:
+      context: ${FRONTEND_PATH:-../cargo-front}
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+        NEXT_PUBLIC_WS_URL: ""
+    image: cargo-v2-frontend:latest
+    restart: unless-stopped
+    networks: [web]
+
+networks:
+  edge: {}
+  web: {}
+  bus: { internal: true }
+  data: { internal: true }
+
+volumes:
+  postgres-data: {}
+  mqtt-iot-data: {}
+  mqtt-iot-certs: {}
+  mqtt-internal-data: {}

@@ -1,0 +1,17 @@
+# Ajustes de desarrollo (docker compose up los carga solo).
+# Producción: `docker compose -f docker-compose.yml up -d` (sin puertos extra).
+# Todos los puertos van a 127.0.0.1, nunca a todas las interfaces.
+services:
+  postgres:
+    ports: ["127.0.0.1:5432:5432"]
+    networks: [data, devnet]
+
+  api:
+    ports: ["127.0.0.1:8000:8000"]
+
+  mqtt-iot:
+    ports:
+      - "127.0.0.1:1883:1883"   # listener sin TLS solo para herramientas locales (el 8883 con TLS lo publica el archivo base)
+
+networks:
+  devnet: {}
