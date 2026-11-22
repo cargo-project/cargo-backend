@@ -1,0 +1,6 @@
+# Una sola cuenta de servicio que comparten los procesos de la plataforma en la red privada.
+user cargo-internal
+topic readwrite telemetry/#
+topic readwrite events/#
+topic readwrite trip/#
+topic read $SYS/broker/uptime

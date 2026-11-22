@@ -1,0 +1,10 @@
+# ACL por dispositivo: el usuario MQTT de un dispositivo ES su codigo.
+# Cada dispositivo solo puede publicar su telemetria y leer su propia asignacion de viaje.
+pattern write telemetry/raw/%u
+pattern read devices/%u/trip
+
+# Cuenta del servicio de ingesta.
+user cargo-ingestion
+topic read telemetry/raw/#
+topic write devices/+/trip
+topic read $SYS/broker/uptime
