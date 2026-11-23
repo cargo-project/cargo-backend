@@ -1,0 +1,58 @@
+# HTTP: solo redirige a HTTPS.
+server {
+  listen 80 default_server;
+  server_name _;
+  return 301 https://${CARGO_DOMAIN}$request_uri;
+}
+
+server {
+  listen 443 ssl default_server;
+  http2 on;
+  server_name ${CARGO_DOMAIN};
+
+  ssl_certificate     /etc/letsencrypt/live/${CARGO_DOMAIN}/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/${CARGO_DOMAIN}/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_session_cache shared:SSL:10m;
+  ssl_session_timeout 1d;
+
+  add_header Strict-Transport-Security "max-age=31536000" always;
+  add_header X-Content-Type-Options nosniff always;
+  add_header X-Frame-Options DENY always;
+  # Hacia otros dominios solo va el origen. Los servidores de mapas (OpenStreetMap) piden Referer.
+  add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+  set $api http://api:8000;
+  set $frontend http://frontend:3000;
+
+  location = /health { proxy_pass $api/health/ready; }
+
+  location /api/v1/ws {
+    proxy_pass $api;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header Origin $http_origin;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 1h;
+  }
+
+  location /api/ {
+    proxy_pass $api;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 30s;
+  }
+
+  location / {
+    proxy_pass $frontend;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}

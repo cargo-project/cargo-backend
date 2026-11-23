@@ -1,0 +1,15 @@
+# Producción: se usa EN LUGAR de docker-compose.override.yml (que es solo para desarrollo).
+# En el .env del servidor:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
+#   COMPOSE_PROFILES=frontend
+#   CARGO_DOMAIN=<dominio público con HTTPS>
+# El certificado de Let's Encrypt se emite en el host (certbot) y se monta solo lectura.
+services:
+  nginx:
+    ports: ["443:443"]                        # el 80 ya lo publica el archivo base (redirige a HTTPS)
+    environment:
+      CARGO_DOMAIN: ${CARGO_DOMAIN:?CARGO_DOMAIN is required in production}
+    volumes:
+      - ./deploy/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/templates:/etc/nginx/templates:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
