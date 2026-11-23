@@ -80,7 +80,24 @@ docker compose --profile frontend up -d         # sirve el frontend Next.js detr
 
 El perfil `frontend` construye el frontend desde `FRONTEND_PATH` (por defecto `../cargo-front`).
 
-Producción (sin puertos de depuración): `docker compose -f docker-compose.yml up -d`.
+### Producción
+
+`docker-compose.prod.yml` reemplaza a `docker-compose.override.yml`: no publica puertos de depuración y agrega HTTPS en Nginx (`deploy/nginx/`), con el certificado de Let's Encrypt emitido en el host.
+
+```bash
+# en el .env del servidor
+ENVIRONMENT=production
+COOKIE_SECURE=true
+CORS_ORIGINS=https://<dominio>
+CARGO_DOMAIN=<dominio>
+COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
+COMPOSE_PROFILES=frontend
+```
+
+```bash
+sudo certbot certonly --standalone -d <dominio>   # una vez, con el puerto 80 libre
+docker compose build && docker compose up -d
+```
 
 ## Ejecutar sin Docker (desarrollo)
 
