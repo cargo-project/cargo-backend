@@ -214,7 +214,7 @@ async def test_settings_roundtrip_preserves_extra_monitoring_fields(admin: ApiCl
 async def test_integration_health_reports_real_status(admin: ApiClient) -> None:
     items = {i["key"]: i for i in (await admin.get("/api/v1/integration-health")).json()["data"]}
     assert items["database"]["status"] == "online"
-    assert items["mapbox"]["status"] == "unconfigured"
+    assert "mapbox" not in items  # la búsqueda de direcciones usa OpenStreetMap
     assert items["telegram"]["status"] == "unconfigured"
     assert items["cep"]["status"] in {"online", "offline"}
 

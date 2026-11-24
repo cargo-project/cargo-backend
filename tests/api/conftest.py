@@ -6,11 +6,13 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from app.composition import identity_factory
 from app.composition.resources import AppResources
 from app.core.config.settings import Settings
 from app.main import create_app
 from tests.support.database import truncate_all
 from tests.support.db_fixtures import database_url, settings
+from tests.support.fake_messenger import FakeMessenger
 from tests.support.seed import ADMIN_EMAIL, OPERATOR_EMAIL, PASSWORD, seed_users
 
 __all__ = ["database_url", "settings"]
@@ -63,3 +65,11 @@ async def admin(client: ApiClient) -> ApiClient:
 async def operator(client: ApiClient) -> ApiClient:
     assert (await client.login(OPERATOR_EMAIL)).status_code == 200
     return client
+
+
+@pytest.fixture
+def messenger(monkeypatch: pytest.MonkeyPatch) -> FakeMessenger:
+    """Reemplaza el Telegram de identidad por uno simulado (verificación de chats y códigos de recuperación)."""
+    fake = FakeMessenger()
+    monkeypatch.setattr(identity_factory, "_messenger", lambda _scope: fake)
+    return fake

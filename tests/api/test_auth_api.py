@@ -67,10 +67,19 @@ async def test_change_password_revokes_sessions(admin: ApiClient) -> None:
     assert (await admin.login(password="Otra-Frase-Segura-99")).status_code == 200
 
 
-async def test_operator_cannot_change_settings_or_recipients(operator: ApiClient) -> None:
+async def test_operator_cannot_change_settings_or_administer(operator: ApiClient) -> None:
     settings = (await operator.get("/api/v1/settings")).json()["data"]
-    assert (await operator.put("/api/v1/settings", json=settings)).status_code == 403
-    response = await operator.post("/api/v1/notification-recipients", json={"name": "Ana", "telegramChatId": "1"})
+    response = await operator.put("/api/v1/settings", json=settings)
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "forbidden"
     assert (await operator.get("/api/v1/users")).status_code == 403
+    assert (await operator.get("/api/v1/integration-health")).status_code == 403
+    assert (await operator.get("/api/v1/admin/overview")).status_code == 403
+    assert (await operator.get("/api/v1/admin/activity")).status_code == 403
+
+
+async def test_operator_manages_telegram_recipients(operator: ApiClient) -> None:
+    created = await operator.post("/api/v1/notification-recipients", json={"name": "Ana", "telegramChatId": "1"})
+    assert created.status_code == 201
+    recipient_id = created.json()["data"]["id"]
+    assert (await operator.delete(f"/api/v1/notification-recipients/{recipient_id}")).status_code == 204
