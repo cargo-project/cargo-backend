@@ -17,11 +17,19 @@ from app.modules.fleet.application.use_cases.driver_use_cases import (
     ListDriversUseCase,
     UpdateDriverUseCase,
 )
+from app.modules.fleet.application.use_cases.fleet_removal_use_cases import (
+    DeleteDeviceUseCase,
+    DeleteDriverUseCase,
+    DeleteVehicleUseCase,
+)
 from app.modules.fleet.application.use_cases.vehicle_use_cases import (
     CreateVehicleUseCase,
     GetVehicleUseCase,
     ListVehiclesUseCase,
     UpdateVehicleUseCase,
+)
+from app.modules.fleet.infrastructure.persistence.postgres_fleet_removal_repository import (
+    PostgresFleetRemovalRepository,
 )
 from app.modules.fleet.infrastructure.persistence.postgres_fleet_repositories import (
     PostgresDeviceAssignmentRepository,
@@ -114,3 +122,24 @@ def update_device(scope: Scope) -> UpdateIoTDeviceUseCase:
 
 def assign_device(scope: Scope) -> AssignDeviceUseCase:
     return _device_command(AssignDeviceUseCase, scope)
+
+
+def delete_vehicle(scope: Scope) -> DeleteVehicleUseCase:
+    return DeleteVehicleUseCase(
+        PostgresVehicleRepository(scope.session), PostgresFleetRemovalRepository(scope.session), scope.uow, scope.audit
+    )
+
+
+def delete_driver(scope: Scope) -> DeleteDriverUseCase:
+    return DeleteDriverUseCase(
+        PostgresDriverRepository(scope.session), PostgresFleetRemovalRepository(scope.session), scope.uow, scope.audit
+    )
+
+
+def delete_device(scope: Scope) -> DeleteDeviceUseCase:
+    return DeleteDeviceUseCase(
+        PostgresIoTDeviceRepository(scope.session),
+        PostgresFleetRemovalRepository(scope.session),
+        scope.uow,
+        scope.audit,
+    )

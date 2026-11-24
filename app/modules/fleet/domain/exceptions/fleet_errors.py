@@ -41,3 +41,9 @@ class InvalidFleetStatusChangeError(BusinessRuleViolationError):
 
 class InvalidFleetDataError(BusinessRuleViolationError):
     code = "invalid_fleet_data"
+
+
+class FleetResourceInUseError(ConflictError):
+    """El registro ya tiene historial (viajes o telemetría): borrarlo rompería ese historial."""
+
+    code = "fleet_resource_in_use"

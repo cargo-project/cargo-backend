@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Response, status
 
 from app.composition import fleet_factory
 from app.core.http.dependencies import ScopeDep
@@ -94,3 +94,27 @@ async def assign_device(
 ) -> DataEnvelope[DeviceResponse]:
     view = await fleet_factory.assign_device(scope).execute(code, body.vehicle_code, actor_id=user.id)
     return wrap(DeviceResponse.from_view(view))
+
+
+@vehicles_router.delete(
+    "/{code}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a vehicle that was never used in a trip"
+)
+async def delete_vehicle(code: str, user: CurrentUser, scope: ScopeDep) -> Response:
+    await fleet_factory.delete_vehicle(scope).execute(code, actor_id=user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@drivers_router.delete(
+    "/{code}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a driver that was never used in a trip"
+)
+async def delete_driver(code: str, user: CurrentUser, scope: ScopeDep) -> Response:
+    await fleet_factory.delete_driver(scope).execute(code, actor_id=user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@devices_router.delete(
+    "/{code}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a device without telemetry or trips"
+)
+async def delete_device(code: str, user: CurrentUser, scope: ScopeDep) -> Response:
+    await fleet_factory.delete_device(scope).execute(code, actor_id=user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
