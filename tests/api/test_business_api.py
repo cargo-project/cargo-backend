@@ -37,7 +37,7 @@ async def _fleet(admin: ApiClient) -> str:
             "firstName": "Luis",
             "lastName": "Ramos",
             "document": "70112233",
-            "license": "Q-998877",
+            "license": "Q70112233",
             "phone": "987654321",
             "status": "available",
         },

@@ -9,7 +9,13 @@ from app.modules.fleet.domain.exceptions.fleet_errors import (
     DriverNotAvailableError,
     InvalidFleetStatusChangeError,
 )
-from app.modules.fleet.domain.services.field_rules import normalise_code, require_text
+from app.modules.fleet.domain.services.field_rules import (
+    normalise_code,
+    normalise_identity_document,
+    normalise_license,
+    normalise_mobile_phone,
+    require_text,
+)
 from app.shared.domain.entity import Entity
 
 
@@ -77,9 +83,9 @@ class Driver(Entity):
     ) -> None:
         self.first_name = require_text(first_name, label="nombre", max_length=60)
         self.last_name = require_text(last_name, label="apellido", max_length=60)
-        self.document_number = require_text(document_number, label="documento", min_length=6, max_length=20)
-        self.license_number = require_text(license_number, label="licencia", min_length=3, max_length=20)
-        self.phone = require_text(phone, label="teléfono", min_length=6, max_length=20)
+        self.document_number = normalise_identity_document(document_number)
+        self.license_number = normalise_license(license_number)
+        self.phone = normalise_mobile_phone(phone)
 
     def change_status(self, new_status: DriverStatus) -> None:
         if new_status == self.status:

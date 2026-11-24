@@ -249,7 +249,7 @@ class FakeFleetAllocation:
 def make_vehicle(code: str = "TRK-001") -> Vehicle:
     return Vehicle.register(
         code=code,
-        plate=f"P{code[-3:]}-XYZ",
+        plate=f"ABC-{code[-3:]}",
         brand="Volvo",
         model="FH",
         description="",
@@ -264,7 +264,7 @@ def make_driver(code: str = "DRV-001") -> Driver:
         first_name="Ana",
         last_name="Quispe",
         document_number=f"4{code[-3:]}5678",
-        license_number="Q12345",
+        license_number=f"Q4{code[-3:]}5678",
         phone="999888777",
         status=DriverStatus.AVAILABLE,
         now=T0,

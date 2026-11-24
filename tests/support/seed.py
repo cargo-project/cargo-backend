@@ -45,7 +45,7 @@ async def seed_fleet(resources: AppResources, suffix: str = "001") -> SeededFlee
         )
     async with open_scope(resources) as scope:
         driver = await fleet_factory.create_driver(scope).execute(
-            DriverData("Ana", "Quispe", f"70{suffix}123", "Q-12345", "999888777", "available"), actor_id=actor
+            DriverData("Ana", "Quispe", f"70{suffix}123", f"Q70{suffix}123", "999888777", "available"), actor_id=actor
         )
     async with open_scope(resources) as scope:
         await fleet_factory.register_device(scope).execute(

@@ -9,7 +9,7 @@ from app.modules.fleet.domain.exceptions.fleet_errors import (
     InvalidFleetStatusChangeError,
     VehicleNotAvailableError,
 )
-from app.modules.fleet.domain.services.field_rules import normalise_code, require_text
+from app.modules.fleet.domain.services.field_rules import normalise_code, normalise_plate, require_text
 from app.shared.domain.entity import Entity
 
 
@@ -57,7 +57,7 @@ class Vehicle(Entity):
         return cls(
             id=uuid.uuid4(),
             code=normalise_code(code, label="vehículo"),
-            plate=require_text(plate, label="placa", min_length=3, max_length=16).upper(),
+            plate=normalise_plate(plate),
             brand=require_text(brand, label="marca", max_length=60),
             model=require_text(model, label="modelo", max_length=60),
             description=description.strip()[:500],
@@ -66,7 +66,7 @@ class Vehicle(Entity):
         )
 
     def update_details(self, *, plate: str, brand: str, model: str, description: str) -> None:
-        self.plate = require_text(plate, label="placa", min_length=3, max_length=16).upper()
+        self.plate = normalise_plate(plate)
         self.brand = require_text(brand, label="marca", max_length=60)
         self.model = require_text(model, label="modelo", max_length=60)
         self.description = description.strip()[:500]
