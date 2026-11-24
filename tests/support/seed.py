@@ -31,10 +31,12 @@ class SeededFleet:
 async def seed_users(resources: AppResources) -> None:
     async with open_scope(resources) as scope:
         create = identity_factory.create_user(scope)
-        await create.execute(CreateUserCommand(ADMIN_EMAIL, "Admin CarGO", PASSWORD, "ADMIN"), actor_id=None)
+        await create.execute(CreateUserCommand(ADMIN_EMAIL, "Admin CarGO", PASSWORD, "ADMIN", "900001"), actor_id=None)
     async with open_scope(resources) as scope:
         create = identity_factory.create_user(scope)
-        await create.execute(CreateUserCommand(OPERATOR_EMAIL, "Operador CarGO", PASSWORD, "OPERATOR"), actor_id=None)
+        await create.execute(
+            CreateUserCommand(OPERATOR_EMAIL, "Operador CarGO", PASSWORD, "OPERATOR", "900002"), actor_id=None
+        )
 
 
 async def seed_fleet(resources: AppResources, suffix: str = "001") -> SeededFleet:
@@ -62,7 +64,9 @@ async def seed_fleet(resources: AppResources, suffix: str = "001") -> SeededFlee
 async def create_actor(resources: AppResources) -> uuid.UUID:
     async with open_scope(resources) as scope:
         user = await identity_factory.create_user(scope).execute(
-            CreateUserCommand(f"actor-{uuid.uuid4().hex[:8]}@cargo.test", "Planificador", PASSWORD, "OPERATOR"),
+            CreateUserCommand(
+                f"actor-{uuid.uuid4().hex[:8]}@cargo.test", "Planificador", PASSWORD, "OPERATOR", "900003"
+            ),
             actor_id=None,
         )
     return user.id

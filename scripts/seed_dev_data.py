@@ -72,6 +72,8 @@ async def seed(resources: AppResources) -> None:
             os.environ.get("SEED_OPERATOR_PASSWORD", ""),
         ),
     ]
+    # Datos de prueba: el chat de Telegram es obligatorio; sin uno real, la recuperación de contraseña no llega.
+    telegram_chat_id = os.environ.get("SEED_TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_TEST_CHAT_ID") or "0"
     for email, name, role, password in accounts:
         if not password:
             logger.warning("password not set; user skipped", extra={"user": email})
@@ -80,7 +82,8 @@ async def seed(resources: AppResources) -> None:
             await _ignore_existing(
                 email,
                 identity_factory.create_user(scope).execute(
-                    CreateUserCommand(email, name, password, role), actor_id=SYSTEM_ACTOR
+                    CreateUserCommand(email, name, password, role, telegram_chat_id, verify_telegram=False),
+                    actor_id=SYSTEM_ACTOR,
                 ),
             )
     actor = uuid.UUID(int=0)
