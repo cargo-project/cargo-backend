@@ -11,6 +11,8 @@ from typing import Final
 TELEMETRY_RAW_PREFIX: Final = "telemetry/raw"
 TELEMETRY_RAW_SUBSCRIPTION: Final = "telemetry/raw/+"
 DEVICE_TRIP_ASSIGNMENT: Final = "devices/{device_code}/trip"
+# Confirmación de aplicación: se publica recién después de guardar la lectura en PostgreSQL.
+DEVICE_TELEMETRY_ACK: Final = "devices/{device_code}/telemetry/ack"
 
 # --- broker interno (red privada)
 TELEMETRY_NORMALIZED: Final = "telemetry/normalized"
@@ -23,6 +25,10 @@ TRIP_ENDED: Final = "trip/ended"
 
 def device_trip_assignment_topic(device_code: str) -> str:
     return DEVICE_TRIP_ASSIGNMENT.format(device_code=device_code)
+
+
+def device_telemetry_ack_topic(device_code: str) -> str:
+    return DEVICE_TELEMETRY_ACK.format(device_code=device_code)
 
 
 def device_code_from_raw_topic(topic: str) -> str | None:
