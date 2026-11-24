@@ -39,6 +39,35 @@ server {
     proxy_read_timeout 1h;
   }
 
+  # Endpoints públicos sensibles con límite por IP (las zonas están en nginx.prod.conf).
+  location = /api/v1/auth/login {
+    limit_req zone=auth_login burst=5 nodelay;
+    proxy_pass $api;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 30s;
+  }
+
+  location ~ ^/api/v1/auth/(register|password-reset/) {
+    limit_req zone=auth_account burst=3 nodelay;
+    proxy_pass $api;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 30s;
+  }
+
+  # Respuesta 429 con el mismo formato de error de la API, para que el front muestre el mensaje.
+  error_page 429 = @rate_limited;
+  location @rate_limited {
+    default_type application/json;
+    add_header Retry-After 60 always;
+    return 429 '{"error":{"code":"rate_limited","message":"Demasiados intentos desde tu conexión. Espera un minuto y vuelve a intentarlo."}}';
+  }
+
   location /api/ {
     proxy_pass $api;
     proxy_http_version 1.1;
