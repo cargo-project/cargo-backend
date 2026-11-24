@@ -72,7 +72,7 @@ async def update_settings(body: SettingsSchema, admin: AdminUser, scope: ScopeDe
     return wrap(SettingsSchema.from_view(view))
 
 
-@settings_router.get("/integration-health", summary="Live status of external integrations")
-async def integration_health(_: CurrentUser, resources: ResourcesDep) -> DataEnvelope[list[IntegrationHealthSchema]]:
+@settings_router.get("/integration-health", summary="Live status of external integrations (ADMIN)")
+async def integration_health(_: AdminUser, resources: ResourcesDep) -> DataEnvelope[list[IntegrationHealthSchema]]:
     statuses = await configuration_factory.check_integration_health(resources).execute()
     return wrap([IntegrationHealthSchema(key=s.key, name=s.name, status=s.status, detail=s.detail) for s in statuses])

@@ -17,6 +17,7 @@ from app.core.http.error_handlers import register_error_handlers
 from app.core.logging.logging_config import configure_logging
 from app.core.realtime.connection_manager import ConnectionManager
 from app.core.security.http_security_middleware import CSRF_HEADER, HttpSecurityMiddleware
+from app.modules.administration.presentation.admin_router import admin_router
 from app.modules.configuration.presentation.settings_router import settings_router
 from app.modules.fleet.presentation.api.fleet_routers import (
     devices_router,
@@ -40,6 +41,7 @@ logger = logging.getLogger("cargo.api")
 API_ROUTERS = (
     auth_router,
     users_router,
+    admin_router,
     vehicles_router,
     drivers_router,
     devices_router,
