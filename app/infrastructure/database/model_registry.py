@@ -12,7 +12,7 @@ from app.modules.fleet.infrastructure.persistence import (
     iot_device_model,
     vehicle_model,
 )
-from app.modules.identity.infrastructure.persistence import user_model
+from app.modules.identity.infrastructure.persistence import password_reset_model, user_model
 from app.modules.monitoring.infrastructure.persistence import monitoring_models
 from app.modules.notifications.infrastructure.persistence import notification_models
 from app.modules.trips.infrastructure.persistence import trip_models
@@ -26,6 +26,7 @@ ALL_MODEL_MODULES = (
     iot_device_model,
     vehicle_model,
     user_model,
+    password_reset_model,
     monitoring_models,
     notification_models,
     trip_models,

@@ -39,6 +39,7 @@ class User(Entity):
         role: Role,
         now: datetime,
         telegram_chat_id: str | None = None,
+        is_active: bool = True,
     ) -> User:
         return cls(
             id=uuid.uuid4(),
@@ -46,7 +47,7 @@ class User(Entity):
             full_name=cls._clean_name(full_name),
             password_hash=password_hash,
             role=role,
-            is_active=True,
+            is_active=is_active,
             created_at=now,
             telegram_chat_id=telegram_chat_id,
         )

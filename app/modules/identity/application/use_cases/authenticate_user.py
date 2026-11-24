@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from app.modules.identity.application.auth_errors import InvalidCredentialsError
+from app.modules.identity.application.auth_errors import AccountPendingApprovalError, InvalidCredentialsError
 from app.modules.identity.application.dto.identity_dto import (
     AuthenticatedSession,
     LoginCommand,
@@ -57,6 +57,10 @@ class AuthenticateUserUseCase:
     async def execute(self, command: LoginCommand) -> AuthenticatedSession:
         now = self._clock.now()
         user = await self._find_user(command.email)
+        if user is not None and not user.is_active and not user.is_locked(now):
+            if self._hasher.verify(user.password_hash, command.password):
+                raise AccountPendingApprovalError()
+            raise InvalidCredentialsError()
         if user is None or not user.can_authenticate(now):
             # Mismo costo que un chequeo real, así el tiempo de respuesta no delata el estado de la cuenta.
             self._hasher.verify_against_dummy(command.password)

@@ -46,11 +46,34 @@ class CreateUserRequest(CamelModel):
     full_name: str = Field(min_length=2, max_length=120)
     password: str = Field(min_length=10, max_length=128)
     role: Literal["ADMIN", "OPERATOR"] = "OPERATOR"
-    telegram_chat_id: str | None = Field(default=None, pattern=r"^-?\d{1,20}$")
+    # Obligatorio: ahí llegan los códigos para recuperar la contraseña.
+    telegram_chat_id: str = Field(pattern=r"^-?\d{1,20}$")
 
 
 class UpdateUserRequest(CamelModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=120)
     role: Literal["ADMIN", "OPERATOR"] | None = None
     is_active: bool | None = None
-    telegram_chat_id: str | None = Field(default=None, pattern=r"^-?\d{0,20}$")
+    telegram_chat_id: str | None = Field(default=None, pattern=r"^-?\d{1,20}$")
+
+
+class PasswordResetRequest(CamelModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class PasswordResetConfirm(CamelModel):
+    email: str = Field(min_length=3, max_length=254)
+    code: str = Field(pattern=r"^\s*\d{6}\s*$")
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+class RegisterRequest(CamelModel):
+    email: str = Field(min_length=3, max_length=254)
+    full_name: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=10, max_length=128)
+    telegram_chat_id: str = Field(pattern=r"^-?\d{1,20}$")
+
+
+class UpdateProfileRequest(CamelModel):
+    full_name: str | None = Field(default=None, min_length=2, max_length=120)
+    telegram_chat_id: str | None = Field(default=None, pattern=r"^-?\d{1,20}$")

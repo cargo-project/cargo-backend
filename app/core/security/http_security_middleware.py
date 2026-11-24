@@ -31,7 +31,13 @@ class HttpSecurityMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app: object, *, api_prefix: str) -> None:
         super().__init__(app)  # type: ignore[arg-type]
-        self._csrf_exempt = {f"{api_prefix}/auth/login", f"{api_prefix}/auth/refresh"}
+        self._csrf_exempt = {
+            f"{api_prefix}/auth/login",
+            f"{api_prefix}/auth/refresh",
+            f"{api_prefix}/auth/password-reset/request",
+            f"{api_prefix}/auth/password-reset/confirm",
+            f"{api_prefix}/auth/register",
+        }
 
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         request.state.request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex

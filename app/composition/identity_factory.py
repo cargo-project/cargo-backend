@@ -15,16 +15,29 @@ from app.modules.identity.application.use_cases.manage_users import (
     CreateUserUseCase,
     GetCurrentUserUseCase,
     ListUsersUseCase,
+    RegisterAccountUseCase,
     UpdateUserUseCase,
+)
+from app.modules.identity.application.use_cases.password_reset import (
+    ConfirmPasswordResetUseCase,
+    RequestPasswordResetUseCase,
 )
 from app.modules.identity.application.use_cases.refresh_session import (
     RefreshSessionUseCase,
     ValidateRefreshSessionUseCase,
 )
+from app.modules.identity.infrastructure.persistence.postgres_password_reset_repository import (
+    PostgresPasswordResetRepository,
+)
 from app.modules.identity.infrastructure.persistence.postgres_user_repository import (
     PostgresRefreshSessionRepository,
     PostgresUserRepository,
 )
+from app.modules.identity.infrastructure.telegram_user_messenger import TelegramUserMessenger
+
+
+def _messenger(scope: Scope) -> TelegramUserMessenger:
+    return TelegramUserMessenger(scope.resources.notification_gateway)
 
 
 def _users(scope: Scope) -> PostgresUserRepository:
@@ -95,9 +108,50 @@ def list_users(scope: Scope) -> ListUsersUseCase:
 
 def create_user(scope: Scope) -> CreateUserUseCase:
     return CreateUserUseCase(
-        _users(scope), scope.resources.password_hasher, scope.uow, scope.resources.clock, scope.audit
+        _users(scope),
+        scope.resources.password_hasher,
+        scope.uow,
+        scope.resources.clock,
+        scope.audit,
+        _messenger(scope),
     )
 
 
 def update_user(scope: Scope) -> UpdateUserUseCase:
-    return UpdateUserUseCase(_users(scope), scope.uow, scope.audit)
+    return UpdateUserUseCase(_users(scope), scope.uow, scope.audit, _messenger(scope))
+
+
+def request_password_reset(scope: Scope) -> RequestPasswordResetUseCase:
+    return RequestPasswordResetUseCase(
+        _users(scope),
+        PostgresPasswordResetRepository(scope.session),
+        scope.resources.password_hasher,
+        _messenger(scope),
+        scope.uow,
+        scope.resources.clock,
+        scope.audit,
+    )
+
+
+def confirm_password_reset(scope: Scope) -> ConfirmPasswordResetUseCase:
+    return ConfirmPasswordResetUseCase(
+        _users(scope),
+        PostgresPasswordResetRepository(scope.session),
+        _sessions(scope),
+        scope.resources.password_hasher,
+        _messenger(scope),
+        scope.uow,
+        scope.resources.clock,
+        scope.audit,
+    )
+
+
+def register_account(scope: Scope) -> RegisterAccountUseCase:
+    return RegisterAccountUseCase(
+        _users(scope),
+        scope.resources.password_hasher,
+        scope.uow,
+        scope.resources.clock,
+        scope.audit,
+        _messenger(scope),
+    )

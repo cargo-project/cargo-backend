@@ -50,6 +50,8 @@ class CreateUserCommand:
     password: str
     role: str
     telegram_chat_id: str | None = None
+    # El bot le escribe al chat para comprobar que existe (los scripts de datos de prueba lo desactivan).
+    verify_telegram: bool = True
 
 
 @dataclass(frozen=True, slots=True)
